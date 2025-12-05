@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>개발 포트폴리오 | Travel Dev</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <nav class="navbar">
+      <div class="brand">Travel Dev</div>
+      <ul class="nav-links">
+        <li><a href="/index.html">홈</a></li>
+        <li><a href="/travel.html">여행</a></li>
+        <li><a href="/portfolio.html" class="active">개발 포트폴리오</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main class="main-content">
+    <section class="page-header">
+      <h1>개발 포트폴리오</h1>
+      <p>최신 프로젝트부터 과거까지의 경력을 확인하세요.</p>
+    </section>
+
+    <section id="portfolio" class="portfolio-section"></section>
+  </main>
+
+  <footer class="site-footer">
+    <small>© 2025 여행하는 개발자</small>
+  </footer>
+
+  <script>
+    function renderTimeline(items){
+      const container = document.getElementById('portfolio');
+      container.innerHTML = '';
+      const timeline = document.createElement('div');
+      timeline.className = 'timeline';
+      items.forEach((it, idx) => {
+        const side = idx % 2 === 0 ? 'side-left' : 'side-right';
+        const item = document.createElement('div');
+        item.className = `timeline-item ${side}`;
+        item.innerHTML = `
+          <span class="timeline-dot"></span>
+          <div class="timeline-card">
+            <span class="period-badge">${it.period}</span>
+            <h3 class="timeline-company">${it.company}</h3>
+            <p class="timeline-task">${it.task}</p>
+          </div>
+        `;
+        timeline.appendChild(item);
+      });
+      container.appendChild(timeline);
+    }
+
+    function sortLatestToOldest(arr){
+      return arr.slice();
+    }
+
+    // 외부 이미지 로딩 실패 시 플레이스홀더로 대체
+    (function(){
+      const img = document.getElementById('schedule-img');
+      if(!img) return;
+      img.addEventListener('error', () => {
+        img.src = '/assets/schedule-placeholder.svg';
+      });
+    })();
+
+    fetch('/data/portfolio.json')
+      .then(res => res.json())
+      .then(items => {
+        const sorted = sortLatestToOldest(items);
+        renderTimeline(sorted);
+      })
+      .catch(err => console.error('포트폴리오 데이터 로딩 오류:', err));
+  </script>
+</body>
+</html>

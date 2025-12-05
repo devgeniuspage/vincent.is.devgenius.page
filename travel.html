@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>여행 | Travel Dev</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+</head>
+<body>
+  <header class="site-header">
+    <nav class="navbar">
+      <div class="brand">Travel Dev</div>
+      <ul class="nav-links">
+        <li><a href="/index.html">홈</a></li>
+        <li><a href="/travel.html" class="active">여행</a></li>
+        <li><a href="/portfolio.html">개발 포트폴리오</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main class="main-content">
+    <section class="page-header">
+      <h1>여행 지도</h1>
+      <p>지도에서 여행지를 탐색하고 마커를 클릭해 도시/국가를 확인하세요.</p>
+    </section>
+
+    <section class="map-section">
+      <div id="map" class="map"></div>
+    </section>
+
+    <section id="flag-bar" class="flag-container"></section>
+
+    <section class="page-header">
+      <h2>여행 일정</h2>
+      <p>기간, 도시, 국가 정보를 카드로 정리했습니다.</p>
+    </section>
+    <section id="travel-list" class="card-list"></section>
+  </main>
+
+  <footer class="site-footer">
+    <small>© 2025 여행하는 개발자</small>
+  </footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+   <script>
+    const map = L.map('map', { preferCanvas: true, worldCopyJump: true });
+    const lightTiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    });
+    lightTiles.addTo(map);
+    map.setView([20, 0], 2);
+
+    function renderList(items){
+      const listEl = document.getElementById('travel-list');
+      if(!listEl) return;
+      const sorted = items.slice().sort((a,b) => {
+        const ap = (a.period||'').replace('.', '')
+        const bp = (b.period||'').replace('.', '')
+        return ap.localeCompare(bp) || (a.city||'').localeCompare(b.city||'');
+      });
+      listEl.innerHTML = '';
+      sorted.forEach(it => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <p class="card-period">${it.period || '-'}</p>
+          <h3 class="card-title">${it.city}, ${it.country} <span class="en-muted">${it.city_e}, ${it.country_e}</span></h3>
+          <p class="card-task"></p>
+        `;
+        // 카드 클릭 시 해당 도시로 포커스 및 팝업
+        card.addEventListener('click', () => {
+          try {
+            const btn = document.querySelector(`.flag-btn[data-country="${it.country}"]`);
+            if(btn) btn.click();
+            const key = `${it.city}::${it.country}`;
+            const marker = markerMap.get(key);
+            if(marker){
+              const ll = marker.getLatLng();
+              map.flyTo(ll, Math.max(map.getZoom(), 6), { animate: true, duration: 0.8, easeLinearity: 0.25 });
+              marker.openPopup();
+            }
+          } catch(e){ console.warn('카드 클릭 처리 오류:', e); }
+        });
+        listEl.appendChild(card);
+      });
+    }
+
+    // Country flag emoji map (localized country names -> emoji)
+    const FLAG_MAP = {
+      '페루':'🇵🇪','볼리비아':'🇧🇴','미국':'🇺🇸','칠레':'🇨🇱','브라질':'🇧🇷','아르헨티나':'🇦🇷','쿠바':'🇨🇺',
+      '튀르키예':'🇹🇷','불가리아':'🇧🇬','루마니아':'🇷🇴','헝가리':'🇭🇺','오스트리아':'🇦🇹','체코':'🇨🇿',
+      '독일':'🇩🇪','스페인':'🇪🇸','포르투갈':'🇵🇹','대한민국':'🇰🇷','일본':'🇯🇵'
+    };
+    const flagEmoji = (country) => FLAG_MAP[country] || '🏳️';
+    // ISO 3166-1 alpha-2 코드 매핑 (소문자) -> FlagCDN SVG 사용
+    const COUNTRY_CODE_MAP = {
+      '페루':'pe','볼리비아':'bo','미국':'us','칠레':'cl','브라질':'br','아르헨티나':'ar','쿠바':'cu',
+      '튀르키예':'tr','불가리아':'bg','루마니아':'ro','헝가리':'hu','오스트리아':'at','체코':'cz',
+      '독일':'de','스페인':'es','포르투갈':'pt','대한민국':'kr','일본':'jp'
+    };
+    const flagImageUrl = (country) => {
+      const code = COUNTRY_CODE_MAP[country];
+      return code ? `https://flagcdn.com/${code}.svg` : '';
+    };
+
+    const markerMap = new Map(); // key: `${city}::${country}` -> marker
+    let currentGroup = null;
+    const countryGroups = new Map();
+    const allGroup = L.layerGroup();
+    const regionGroups = new Map();
+
+    // Fit map view to a given layer group
+    function fitMapToGroup(group){
+      try{
+        if(!group){
+          map.setView([20, 0], 2);
+          return;
+        }
+        // 우선 클러스터 그룹이면 getBounds 사용
+        if(group.getBounds){
+          const bounds = group.getBounds();
+          if(bounds && bounds.isValid && bounds.isValid()){
+            map.flyToBounds(bounds, { padding: [80, 80], maxZoom: 6, animate: true, duration: 0.9, easeLinearity: 0.25 });
+            return;
+          }
+        }
+        // 일반 그룹 처리
+        const layers = group.getLayers ? group.getLayers() : [];
+        if(!layers.length){ map.setView([20, 0], 2); return; }
+        if(layers.length === 1){
+          const ll = layers[0].getLatLng && layers[0].getLatLng();
+          if(ll){ map.flyTo(ll, Math.max(map.getZoom(), 6), { animate: true, duration: 0.9, easeLinearity: 0.25 }); }
+          else { map.setView([20, 0], 2); }
+          return;
+        }
+        const points = layers.map(l => l.getLatLng && l.getLatLng()).filter(Boolean);
+        const bounds = L.latLngBounds(points);
+        if(bounds.isValid()){
+          map.flyToBounds(bounds, { padding: [80, 80], maxZoom: 6, animate: true, duration: 0.9, easeLinearity: 0.25 });
+        } else { map.setView([20, 0], 2); }
+      }catch(e){
+        console.warn('fitMapToGroup 오류:', e);
+        map.setView([20, 0], 2);
+      }
+    }
+
+    function getFirstSpotForCountry(spots, country){
+      const arr = spots.filter(s => s.country === country && Number.isFinite(s.lat) && Number.isFinite(s.lng));
+      arr.sort((a,b) => {
+        const ap = (a.period||'').replace(/\./g, '');
+        const bp = (b.period||'').replace(/\./g, '');
+        return ap.localeCompare(bp) || (a.city||'').localeCompare(b.city||'');
+      });
+      return arr[0] || null;
+    }
+
+    function renderFlags(countries, spots){
+      const container = document.getElementById('flag-bar');
+      if(!container) return;
+      container.innerHTML = '';
+
+      // "나라별로 보기" 타이틀을 기존 헤더 스타일로 추가
+      const mainHeader = document.createElement('section');
+      mainHeader.className = 'page-header';
+      const mainTitle = document.createElement('h2');
+      mainTitle.textContent = '나라별로 보기';
+      mainHeader.appendChild(mainTitle);
+      container.appendChild(mainHeader);
+
+      // 대륙 그룹 정의
+      const REGION_ORDER = ['전체','아시아','유럽','북중미','남미','아프리카'];
+      const REGION_COUNTRIES = {
+        '전체': countries.slice(), // travel.json의 모든 나라 포함
+        '아시아': ['대한민국','일본','튀르키예'],
+        '유럽': ['불가리아','루마니아','헝가리','오스트리아','체코','독일','스페인','포르투갈'],
+        '북중미': ['미국','쿠바'],
+        '남미': ['페루','볼리비아','칠레','브라질','아르헨티나'],
+        '아프리카': []
+      };
+
+      // 전체 버튼 섹션 제거: 타이틀 없이 상단에 전체 버튼만 배치
+      /* 상단 '전체' 국기(글로브 아이콘) 숨김 처리: 기존 UI 블록 비활성화
+      const allBar = document.createElement('div');
+      allBar.className = 'flag-bar';
+      const allItem = document.createElement('div');
+      allItem.className = 'flag-item';
+      allItem.dataset.country = '';
+      const allBtn = document.createElement('button');
+      allBtn.className = 'flag-btn active';
+      allBtn.dataset.country = '';
+      allBtn.innerHTML = `<img class="flag-img flag-img-contain" src="https://w1.pngwing.com/pngs/981/571/png-transparent-globe-icon-world-icon-design-symbol-text-black-and-white-circle-line.png" alt="전체" title="전체"/>`;
+      const allLabel = document.createElement('span');
+      allLabel.className = 'flag-name';
+      allLabel.dataset.country = '';
+      allLabel.textContent = '전체';
+      allLabel.setAttribute('role','button');
+      allLabel.setAttribute('tabindex','0');
+      allItem.appendChild(allBtn);
+      allItem.appendChild(allLabel);
+      allBar.appendChild(allItem);
+      container.appendChild(allBar);
+      */
+
+      // 각 대륙 섹션 생성: 이제 '전체'도 포함
+      REGION_ORDER.forEach(region => {
+        const section = document.createElement('div');
+        section.className = 'flag-section';
+        section.dataset.region = region;
+        
+        const header = document.createElement('button');
+        header.className = 'flag-section-title';
+        header.setAttribute('type','button');
+        header.setAttribute('aria-expanded','false');
+        header.innerHTML = `<span class="title-text">${region}</span><span class="line"></span><span class="toggle-icon" aria-hidden="true">▼</span>`;
+        header.style.cursor = 'pointer';
+        const bar = document.createElement('div');
+        bar.className = 'flag-bar collapsible';
+        bar.setAttribute('hidden','');
+      
+        const list = region === '전체' ? countries.slice() : (REGION_COUNTRIES[region] || []);
+        list.forEach(cty => {
+          const item = document.createElement('div');
+          item.className = 'flag-item';
+          item.dataset.country = cty;
+          const btn = document.createElement('button');
+          btn.className = 'flag-btn';
+          btn.dataset.country = cty;
+          const imgSrc = flagImageUrl(cty);
+          btn.innerHTML = imgSrc
+            ? `<img class="flag-img flag-img-contain" src="${imgSrc}" alt="${cty} 국기" title="${cty}"/>`
+            : '';
+          const label = document.createElement('span');
+          label.className = 'flag-name';
+          label.dataset.country = cty;
+          label.textContent = cty;
+          label.setAttribute('role','button');
+          label.setAttribute('tabindex','0');
+          item.appendChild(btn);
+          item.appendChild(label);
+          bar.appendChild(item);
+        });
+      
+        section.appendChild(header);
+        section.appendChild(bar);
+        container.appendChild(section);
+      });
+
+      // 대륙 그룹(LayerGroup) 구성: 국가 그룹을 합쳐 생성 ('전체'는 allGroup 사용)
+      REGION_ORDER.forEach(region => {
+        let regGroup;
+        if(region === '전체'){
+          regGroup = allGroup;
+        } else {
+          regGroup = L.layerGroup();
+          const countriesInRegion = REGION_COUNTRIES[region] || [];
+          countriesInRegion.forEach(cty => {
+            const grp = countryGroups.get(cty);
+            if(grp && grp.getLayers){
+              grp.getLayers().forEach(layer => regGroup.addLayer(layer));
+            }
+          });
+        }
+        regionGroups.set(region, regGroup);
+      });
+
+      function setRegionActive(region){
+        const titles = container.querySelectorAll('.flag-section-title');
+        titles.forEach(t => {
+          const name = t.querySelector('.title-text')?.textContent?.trim() || '';
+          if(name === (region||'')) t.classList.add('active');
+          else t.classList.remove('active');
+        });
+      }
+
+      function setActive(country){
+        const buttons = container.querySelectorAll('.flag-btn');
+        buttons.forEach(b => {
+          if((b.dataset.country||'') === (country||'')) b.classList.add('active');
+          else b.classList.remove('active');
+        });
+      }
+
+      function applyRegionFilter(region){
+        // 대륙 그룹 선택
+        const nextGroup = regionGroups.get(region);
+        if(!nextGroup){ return; }
+        if(currentGroup){ map.removeLayer(currentGroup); }
+        nextGroup.addTo(map);
+        currentGroup = nextGroup;
+
+        // 리스트 필터링: 해당 대륙의 국가만
+        const countriesInRegion = REGION_COUNTRIES[region] || [];
+        const filtered = spots.filter(s => countriesInRegion.includes(s.country));
+        renderList(filtered);
+        // 타이틀 활성화, 국가 활성화 해제
+        setRegionActive(region);
+        setActive('');
+        // 맵 범위 맞춤
+        fitMapToGroup(currentGroup);
+        // 섹션 토글: 클릭한 대륙만 열고/닫기 (다른 섹션 상태 유지)
+        const targetSection = Array.from(container.querySelectorAll('.flag-section')).find(sec => (sec.dataset.region === region));
+        if(targetSection) toggleRegion(targetSection);
+      }
+
+      function applyFilter(country){
+        if(currentGroup){ map.removeLayer(currentGroup); }
+        const nextGroup = country ? countryGroups.get(country) : allGroup;
+        if(nextGroup){ nextGroup.addTo(map); }
+        currentGroup = nextGroup || null;
+
+        const filtered = country ? spots.filter(s => s.country === country) : spots;
+        renderList(filtered);
+        // 국가 활성화 처리
+        setActive(country || '');
+        // 해당 국가의 대륙 활성화 또는 '전체'
+        const regionOfCountry = country
+          ? (REGION_ORDER.find(r => r !== '전체' && (REGION_COUNTRIES[r] || []).includes(country)) || '')
+          : '전체';
+        setRegionActive(regionOfCountry);
+        // 맵 범위 맞춤
+        fitMapToGroup(currentGroup);
+      }
+
+      function toggleRegion(section){
+        const bar = section.querySelector('.flag-bar');
+        const isOpen = bar && !bar.hasAttribute('hidden');
+        if(isOpen){ closeSection(section); }
+        else{ openSection(section); }
+      }
+
+      // 초기 상태: 모두 닫힘(높이 0)
+      container.querySelectorAll('.flag-section').forEach(sec => {
+        const bar = sec.querySelector('.flag-bar');
+        const icon = sec.querySelector('.toggle-icon');
+        const titleEl = sec.querySelector('.flag-section-title');
+        bar.setAttribute('hidden','');
+        bar.style.height = '0px';
+        sec.classList.remove('open');
+        if(icon) icon.textContent = '▼';
+        if(titleEl) titleEl.setAttribute('aria-expanded','false');
+      });
+      // 최초 로드 시 '전체' 섹션 열기
+      const defaultSection = Array.from(container.querySelectorAll('.flag-section')).find(sec => sec.dataset.region === '전체');
+      if(defaultSection) openSection(defaultSection);
+      container.addEventListener('click', (e) => {
+        const title = e.target.closest('.flag-section-title');
+        if(title){
+          const region = title.querySelector('.title-text')?.textContent?.trim() || title.textContent.replace(/(▼|▲)/g,'').trim();
+          applyRegionFilter(region);
+          return;
+        }
+        const targetEl = e.target.closest('.flag-btn, .flag-name, .flag-item');
+        if(!targetEl) return;
+        const country = targetEl.dataset.country || '';
+        applyFilter(country);
+      });
+
+      // 키보드 접근성: Enter/Space로 제목 토글
+      container.addEventListener('keydown', (e) => {
+        const title = e.target.closest('.flag-section-title');
+        if(title && (e.key === 'Enter' || e.key === ' ')){
+          e.preventDefault();
+          const region = title.querySelector('.title-text')?.textContent?.trim() || title.textContent.replace(/(▼|▲)/g,'').trim();
+          applyRegionFilter(region);
+        }
+        const label = e.target.closest('.flag-name');
+        if(label && (e.key === 'Enter' || e.key === ' ')){
+          e.preventDefault();
+          const country = label.dataset.country || '';
+          applyFilter(country);
+        }
+      });
+    }
+
+    fetch('/data/travel.json')
+      .then(res => res.json())
+      .then(spots => {
+        const withCoords = spots.filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lng));
+
+        // Build groups by country and allGroup
+        withCoords.forEach(({ city, country, lat, lng }) => {
+          const marker = L.marker([lat, lng]);
+          marker.bindPopup(`<strong>${city}</strong><br/>${country}`);
+          marker.bindTooltip(`${city}`, {permanent: false});
+          allGroup.addLayer(marker);
+          const key = `${city}::${country}`;
+          markerMap.set(key, marker);
+          if(country){
+            const grp = countryGroups.get(country) || L.layerGroup();
+            grp.addLayer(marker);
+            countryGroups.set(country, grp);
+          }
+        });
+        // Show all markers initially
+        allGroup.addTo(map);
+        currentGroup = allGroup;
+
+        // Fit map to all markers initially
+        fitMapToGroup(allGroup);
+
+        // Render flags
+        const countries = Array.from(new Set(spots.map(s => s.country).filter(Boolean))).sort();
+        renderFlags(countries, spots);
+
+        // Render full list initially
+        renderList(spots);
+      })
+      .catch(err => console.error('여행 데이터 로딩 오류:', err));
+      // 슬라이드 애니메이션 헬퍼
+      function openSection(section){
+        const bar = section.querySelector('.flag-bar');
+        const icon = section.querySelector('.toggle-icon');
+        const titleEl = section.querySelector('.flag-section-title');
+        if(!bar) return;
+        bar.removeAttribute('hidden');
+        const target = bar.scrollHeight;
+        bar.style.height = '0px';
+        requestAnimationFrame(() => {
+          bar.style.height = `${target}px`;
+        });
+        const onEnd = () => {
+          bar.style.height = '';
+          bar.removeEventListener('transitionend', onEnd);
+        };
+        bar.addEventListener('transitionend', onEnd);
+        section.classList.add('open');
+        if(icon) icon.textContent = '▲';
+        if(titleEl) titleEl.setAttribute('aria-expanded','true');
+      }
+      function closeSection(section){
+        const bar = section.querySelector('.flag-bar');
+        const icon = section.querySelector('.toggle-icon');
+        const titleEl = section.querySelector('.flag-section-title');
+        if(!bar) return;
+        const start = bar.scrollHeight;
+        bar.style.height = `${start}px`;
+        requestAnimationFrame(() => {
+          bar.style.height = '0px';
+        });
+        const onEnd = () => {
+          bar.setAttribute('hidden','');
+          bar.style.height = '';
+          bar.removeEventListener('transitionend', onEnd);
+        };
+        bar.addEventListener('transitionend', onEnd);
+        section.classList.remove('open');
+        if(icon) icon.textContent = '▼';
+        if(titleEl) titleEl.setAttribute('aria-expanded','false');
+      }
+  </script>
+</body>
+</html>
